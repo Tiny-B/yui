@@ -11,9 +11,14 @@ import io, os, sys, requests, json, pathlib, traceback, shutil
 import random
 from typing import List, Tuple
 import subprocess, tempfile, platform
-import whisper
+import whisper, inspect
+from whisper import load_model
 import pathlib
-import argparse
+import argparse, torch, json, time, queue, time
+from mic_queue import microphone_stream
+import torch
+
+
 
 response_history = [""]
 banned_words_list = [
@@ -153,6 +158,32 @@ def get_user_prompt():
 # --------------------------------------------------------------
 #  TTS / Audio
 # --------------------------------------------------------------
+
+
+
+
+#  have AI give response upon load to spin up ollama, then need keep alive setting adjusted
+#  give a random response if left without interaction, on a randomized timer
+#  stop random response timer if interaction made and block random response for some time too allow response to interaction
+# add ruleset for random response
+def get_random_int(max):
+  return #Math.floor(Math.random() * max);
+
+# remove random prompt from array so AI doesn"t repeat, need to add LOTS more random prompts
+def get_random_response():
+  index = get_random_int(len(random_prompts)) - 1
+  if (index < 0): index = 0
+
+  response = random_prompts[index]
+  print(f"Random prompt {index}/{len(random_prompts)}: {response}")
+
+  return response
+
+def random_response_delay():
+  delay = get_random_int(max_delay)
+  if (delay < min_delay): delay += min_delay
+  get_response(True)
+
 def _download_mp3(url: str) -> bytes:
     """
     Download the URL that Murf returns and make sure it looks like an MP3.
@@ -253,34 +284,10 @@ def play_tts(prompt: str):
 
     _play_with_system_player(mp3);
 
-
-
-#  have AI give response upon load to spin up ollama, then need keep alive setting adjusted
-#  give a random response if left without interaction, on a randomized timer
-#  stop random response timer if interaction made and block random response for some time too allow response to interaction
-# add ruleset for random response
-def get_random_int(max):
-  return #Math.floor(Math.random() * max);
-
-# remove random prompt from array so AI doesn"t repeat, need to add LOTS more random prompts
-def get_random_response():
-  index = get_random_int(len(random_prompts)) - 1
-  if (index < 0): index = 0
-
-  response = random_prompts[index]
-  print(f"Random prompt {index}/{len(random_prompts)}: {response}")
-
-  return response
-
-def random_response_delay():
-  delay = get_random_int(max_delay)
-  if (delay < min_delay): delay += min_delay
-  get_response(True)
-
 # --------------------------------------------------------------
 #  MAIN CHAT LOOP
 # --------------------------------------------------------------
-def get_response(is_random = False):
+def get_response(text, is_random = False,):
   #clearInterval(intervalID);
   #print(f"Delay {intervalID} has been cancelled.")
 
@@ -290,7 +297,8 @@ def get_response(is_random = False):
   if (is_random):
     prompt = get_random_response()
   else:
-    prompt = get_user_prompt()
+    # prompt = get_user_prompt()
+    prompt = text;
 
   if "/bye/" in prompt: 
     os.system('clear') 
@@ -304,7 +312,7 @@ def get_response(is_random = False):
   response: ChatResponse = chat(model="yui3:latest", messages=[
   {
     "role": "user",
-    "content": f"({response_history}), Here is the current chat message: {prompt}",
+    "content": f"(Here is your conversation history so far. {response_history}), this is for reference only, Here is the current chat message for you to reply to: {prompt}",
   },
   ])
     #print(response["message"]["content"])
@@ -322,30 +330,128 @@ def get_response(is_random = False):
   with open("history.txt", "a", encoding="utf-8") as f:
       f.write(output_text)
 
-  get_response(False);
+  # get_response(False);
 
-def transcribe(audio_path: pathlib.Path, model_name: str = "base"):
-  model = whisper.load_model('base')
-  result = model.transcribe(str(audio_path))
-  return result["text"]
+SAMPLE_RATE = 16000
+CHANNELS = 1
+CHUNK_MS = 3000
+BYTES_PER_CHUNK = int(SAMPLE_RATE * (CHUNK_MS / 1000)) * 2
+mic_q = queue.Queue()   # single, global instance
 
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description="Whisper batch transcription")
-    parser.add_argument("audio", type=pathlib.Path, help="Path to an audio file (any format ffmpeg supports)")
-    parser.add_argument("-m", "--model", default="base", help="Whisper model size")
+
+# -------------------------------------------------
+# 2️⃣ Sounddevice callback → raw PCM → MicQueue
+# -------------------------------------------------
+def audio_callback(indata, frames, time_, status):
+    """Called by sounddevice on every audio block."""
+    if status:
+        print(f"[mic] {status}", file=sys.stderr)
+    # `indata` is a NumPy array of shape (frames, channels) and dtype int16
+    mic_q.put(bytes(indata))
+
+def start_mic(device=None):
+    """Open the microphone stream and start it."""
+    stream = sd.RawInputStream(
+        samplerate=SAMPLE_RATE,
+        blocksize=int(SAMPLE_RATE * (CHUNK_MS / 1000)),   # frames per block
+        dtype="int16",
+        channels=CHANNELS,
+        device=device,               # None → OS default
+        callback=audio_callback,
+    )
+    stream.start()
+    return stream
+
+# -------------------------------------------------
+# Whisper real‑time transcription
+# -------------------------------------------------
+def whisper_loop(model_name: str = "tiny", language: str | None = None, device_idx=None):
+    import whisper
+    torch_dev = "cuda" if torch.cuda.is_available() else "cpu"
+    print(f"[whisper] loading model '{model_name}' on {torch_dev}")
+    model = whisper.load_model(model_name, device=torch_dev)
+
+    buf = bytearray()
+    while True:
+        # -------------------------------------------------
+        # 1️⃣ Pull the next block from the queue (blocks until available)
+        # -------------------------------------------------
+        chunk_bytes = mic_q.get()
+        # print("[debug] got chunk size:", len(chunk_bytes))   # should be 6400
+        buf.extend(chunk_bytes)
+
+        # -------------------------------------------------
+        # 2️⃣ Process every *full* chunk we have accumulated
+        # -------------------------------------------------
+        while len(buf) >= BYTES_PER_CHUNK:
+            # Split off exactly one 0.2 s piece
+            chunk, buf = buf[:BYTES_PER_CHUNK], buf[BYTES_PER_CHUNK:]
+
+            # -------------------------------------------------
+            # 3️⃣ Convert raw int16 → float32 NumPy array (shape = (samples,))
+            # -------------------------------------------------
+            audio_np = np.frombuffer(chunk, dtype=np.int16).astype(np.float32) / 32768.0
+            # NOTE: **NO torch conversion** – Whisper can work directly with a NumPy array
+
+            # -------------------------------------------------
+            # 4️⃣ Build options (language override, if any)
+            # -------------------------------------------------
+            opts = {}
+            if language:
+                opts["language"] = language
+
+            # -------------------------------------------------
+            # 5️⃣ Run Whisper on the 0.2 s slice
+            # -------------------------------------------------
+            result = model.transcribe(audio_np, **opts)   # <-- NUMPY, not torch tensor
+            # -------------------------------------------------
+            # 6️⃣ Verify the result is a dict (the correct API)
+            # -------------------------------------------------
+            # print(">>> Whisper result type:", type(result))   # should be <class 'dict'>
+            txt = result.get("text", "").strip()
+            if txt:
+                # Live‑feel: overwrite the same line
+                print("\r🗣️ " + txt, end="", flush=True)
+                get_response(txt, False)
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("-e", "--engine", choices=["whisper"], default="whisper")
+    parser.add_argument("-m", "--model", default="tiny", help="whisper model (tiny|base|small|medium|large)")
+    parser.add_argument("-l", "--lang", default=None, help="ISO‑639‑1 language code (e.g. en, fr).")
+    parser.add_argument("-d", "--device", type=int, default=None,
+                        help="input device index (run a short script to list devices if you don’t know)")
     args = parser.parse_args()
 
-    print("Transcribing …")
-    txt = transcribe(args.audio, args.model)
-    print("\n--- RESULT ----------------------------------------------------------")
-    print(txt)
+    # -------------------------------------------------
+    # 0️⃣ Start the microphone
+    # -------------------------------------------------
+    stream = start_mic(device=args.device)
+    print("[mic] listening… (Ctrl‑C to quit)")
+
+    # -------------------------------------------------
+    # 1️⃣ Run the requested engine
+    # -------------------------------------------------
+    if args.engine == "whisper":
+        whisper_loop(model_name=args.model, language=args.lang, device_idx=args.device)
+
+    # -------------------------------------------------
+    # 2️⃣ Clean‑up
+    # -------------------------------------------------
+    stream.stop()
+    stream.close()
+
+if __name__ == '__main__':
     # Optional: on Windows enable ANSI handling (colorama does it automatically
     # when you import it, but we’re not using colorama directly here).
+    
     if sys.platform.startswith('win'):
         import os
         os.system('')   # enables VT processing on recent Windows builds
     os.system('clear')
-    get_response(False);
+    main()
+    #get_response(False);
 #  add ability to interact using voice
 #  add ability to respond to users by name and recognize regular users
 #  speed up response time
