@@ -340,7 +340,7 @@ mic_q = queue.Queue()   # single, global instance
 
 
 # -------------------------------------------------
-# 2️⃣ Sounddevice callback → raw PCM → MicQueue
+# 2️ Sounddevice callback → raw PCM → MicQueue
 # -------------------------------------------------
 def audio_callback(indata, frames, time_, status):
     """Called by sounddevice on every audio block."""
@@ -374,38 +374,38 @@ def whisper_loop(model_name: str = "tiny", language: str | None = None, device_i
     buf = bytearray()
     while True:
         # -------------------------------------------------
-        # 1️⃣ Pull the next block from the queue (blocks until available)
+        # 1️ Pull the next block from the queue (blocks until available)
         # -------------------------------------------------
         chunk_bytes = mic_q.get()
         # print("[debug] got chunk size:", len(chunk_bytes))   # should be 6400
         buf.extend(chunk_bytes)
 
         # -------------------------------------------------
-        # 2️⃣ Process every *full* chunk we have accumulated
+        # 2️ Process every *full* chunk we have accumulated
         # -------------------------------------------------
         while len(buf) >= BYTES_PER_CHUNK:
             # Split off exactly one 0.2 s piece
             chunk, buf = buf[:BYTES_PER_CHUNK], buf[BYTES_PER_CHUNK:]
 
             # -------------------------------------------------
-            # 3️⃣ Convert raw int16 → float32 NumPy array (shape = (samples,))
+            # 3️ Convert raw int16 → float32 NumPy array (shape = (samples,))
             # -------------------------------------------------
             audio_np = np.frombuffer(chunk, dtype=np.int16).astype(np.float32) / 32768.0
             # NOTE: **NO torch conversion** – Whisper can work directly with a NumPy array
 
             # -------------------------------------------------
-            # 4️⃣ Build options (language override, if any)
+            # 4️ Build options (language override, if any)
             # -------------------------------------------------
             opts = {}
             if language:
                 opts["language"] = language
 
             # -------------------------------------------------
-            # 5️⃣ Run Whisper on the 0.2 s slice
+            # 5️ Run Whisper on the 0.2 s slice
             # -------------------------------------------------
             result = model.transcribe(audio_np, **opts)   # <-- NUMPY, not torch tensor
             # -------------------------------------------------
-            # 6️⃣ Verify the result is a dict (the correct API)
+            # 6️ Verify the result is a dict (the correct API)
             # -------------------------------------------------
             # print(">>> Whisper result type:", type(result))   # should be <class 'dict'>
             txt = result.get("text", "").strip()
@@ -425,19 +425,19 @@ def main():
     args = parser.parse_args()
 
     # -------------------------------------------------
-    # 0️⃣ Start the microphone
+    # 0️ Start the microphone
     # -------------------------------------------------
     stream = start_mic(device=args.device)
     print("[mic] listening… (Ctrl‑C to quit)")
 
     # -------------------------------------------------
-    # 1️⃣ Run the requested engine
+    # 1️ Run the requested engine
     # -------------------------------------------------
     if args.engine == "whisper":
         whisper_loop(model_name=args.model, language=args.lang, device_idx=args.device)
 
     # -------------------------------------------------
-    # 2️⃣ Clean‑up
+    # 2️ Clean‑up
     # -------------------------------------------------
     stream.stop()
     stream.close()
