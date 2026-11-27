@@ -192,7 +192,7 @@ def _download_mp3(url: str) -> bytes:
     r = requests.get(url, allow_redirects=True, timeout=15)
 
     # -----------------------------------------------------------------
-    # 1️⃣ Status code must be 2xx
+    # 1️ Status code must be 2xx
     # -----------------------------------------------------------------
     if not r.ok:
         raise RuntimeError(
@@ -201,7 +201,7 @@ def _download_mp3(url: str) -> bytes:
         )
 
     # -----------------------------------------------------------------
-    # 2️⃣ Content‑Type header should be audio/* (most providers use
+    # 2️ Content‑Type header should be audio/* (most providers use
     #    'audio/mpeg' for MP3).  Some CDNs omit it – fall back to sniffing.
     # -----------------------------------------------------------------
     ct = r.headers.get("Content-Type", "").lower()
@@ -216,7 +216,7 @@ def _download_mp3(url: str) -> bytes:
         )
 
     # -----------------------------------------------------------------
-    # 3️⃣ Basic sanity‑check on size – MP3s are rarely < 1 KB (unless error page).
+    # 3️ Basic sanity‑check on size – MP3s are rarely < 1 KB (unless error page).
     # -----------------------------------------------------------------
     if len(r.content) < 1024:
         raise RuntimeError(
@@ -225,7 +225,7 @@ def _download_mp3(url: str) -> bytes:
         )
 
     # -----------------------------------------------------------------
-    # 4️⃣ (Optional) Write to a temp file so you can examine it with ffplay,
+    # 4️ (Optional) Write to a temp file so you can examine it with ffplay,
     #    Audacity, etc.  Helpful during development.
     # -----------------------------------------------------------------
     if os.getenv("DEBUG_DUMP_MP3"):
@@ -271,7 +271,7 @@ def _play_with_system_player(mp3_bytes: bytes):
         pass
 
 def play_tts(prompt: str):
-    client = Murf(api_key="ap2_c18e6c32-a3bb-403e-9c8e-f87869795b06")
+    client = Murf(api_key="")
     resp   = client.text_to_speech.generate(
                 text=prompt,
                 voice_id="bn-IN-anwesha",
